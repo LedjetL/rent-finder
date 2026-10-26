@@ -1,0 +1,437 @@
+// Rent Finder Tirana — data model
+//
+// Five decisions here are expensive to reverse and are made deliberately:
+//   1. ONE listing table. "I have a room", "I need a room" and "I have a flat" are
+//      the same row with `direction` and `propertyKind` flipped — not four tables,
+//      not an EAV bag. See docs/strategy.md.
+//   2. Multi-city from the schema up. Only Tirana is `isLive`; the UI stays
+//      Tirana-only until there is a reason for it not to be.
+//   3. Multi-currency. `priceAmountCents` + `priceCurrency` is what the human typed;
+//      `priceEurCents` is denormalised on write so one index serves every query.
+//   4. Content i18n as rows (ListingTranslation), so adding Italian is an INSERT.
+//   5. Append-only Event log. It is the only thing here that cannot be backfilled.
+//
+// Money is stored in integer minor units everywhere. No floats, no Decimal
+// serialisation surprises at the API boundary.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────── enums ──
+
+/// Who is speaking. OFFER = "I have a place", WANTED = "I need one".
+enum Direction {
+  OFFER
+  WANTED
+}
+
+enum PropertyKind {
+  ROOM
+  WHOLE_UNIT
+  SHORT_TERM
+}
+
+/// Albanian flats are described as bedrooms + living room: a "2+1" is two bedrooms
+/// plus a living room. Translating to "2 bedroom" loses information and reads foreign.
+enum Layout {
+  GARSONIERE
+  ONE_PLUS_ONE
+  TWO_PLUS_ONE
+  THREE_PLUS_ONE
+  FOUR_PLUS_ONE
+}
+
+enum Currency {
+  EUR
+  ALL
+}
+
+enum Furnished {
+  FULL
+  PARTIAL
+  NONE
+}
+
+/// Split-unit AC is how most of Tirana actually heats and cools.
+enum Heating {
+  AC
+  CENTRAL
+  ELECTRIC
+  WOOD
+  NONE
+}
+
+enum BathroomType {
+  PRIVATE
+  SHARED
+}
+
+/// Only ever applied to ROOM listings where the advertiser lives in the property.
+/// Forbidden on WHOLE_UNIT — see docs/strategy.md, legal.
+enum GenderPref {
+  ANY
+  FEMALE
+  MALE
+  MIXED
+}
+
+enum ListingStatus {
+  DRAFT
+  ACTIVE
+  TAKEN
+  EXPIRED
+}
+
+enum ModerationState {
+  PENDING
+  APPROVED
+  REJECTED
+  SHADOW
+}
+
+enum VerificationKind {
+  PHONE
+  ID
+  OWNERSHIP_DOC
+  MET_IN_PERSON
+}
+
+enum VerificationState {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+/// Controlled vocabulary for the append-only log. CONTACT_REVEALED →
+/// LISTING_MARKED_TAKEN is the entire funnel, because chat is off-platform.
+enum EventVerb {
+  LISTING_PUBLISHED
+  LISTING_VIEWED
+  LISTING_MARKED_TAKEN
+  SEEKER_PROFILE_PUBLISHED
+  CONTACT_REVEALED
+  MATCH_CONFIRMED
+  LISTING_REPORTED
+  USER_REGISTERED
+}
+
+enum ReportReason {
+  SCAM
+  WRONG_PRICE
+  ALREADY_RENTED
+  AGENCY_POSING
+  STOLEN_PHOTOS
+  OTHER
+}
+
+// ─────────────────────────────────────────────────────── geography ──
+
+model City {
+  id              String   @id @default(cuid())
+  slug            String   @unique
+  name            String
+  countryCode     String   @default("AL")
+  lat             Float
+  lng             Float
+  defaultCurrency Currency @default(EUR)
+  /// Only live cities appear in the UI. Durrës and Vlorë can exist as rows long
+  /// before they exist as a product.
+  isLive          Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  areas    Area[]
+  listings Listing[]
+}
+
+model Area {
+  id     String @id @default(cuid())
+  cityId String
+  city   City   @relation(fields: [cityId], references: [id], onDelete: Cascade)
+
+  slug String
+  name String
+  /// The names people actually say — "te Komuna", "te 21-shi", "Studenti".
+  /// GIN-indexed; search must match these, not just `name`.
+  aliases String[] @default([])
+  lat     Float
+  lng     Float
+  blurbSq String?
+  blurbEn String?
+
+  listings  Listing[]
+  wantedBy  ListingAreaPref[]
+
+  @@unique([cityId, slug])
+  @@index([cityId])
+}
+
+// ─────────────────────────────────────────────────────────── users ──
+
+model User {
+  id String @id @default(cuid())
+
+  /// Phone is the identity primitive, not email — it is the anti-spam signal, the
+  /// agency-detection signal and the paid-tier boundary all at once.
+  phoneE164      String    @unique
+  phoneVerifiedAt DateTime?
+  /// Hashed separately so listings can be grouped by owner phone without joining users.
+  phoneHash      String
+
+  email        String? @unique
+  passwordHash String?
+
+  displayName String
+  locale      String  @default("sq")
+  birthYear   Int?
+  /// CSV of language codes, e.g. "sq,en,it"
+  languages   String  @default("sq")
+  bio         String?
+  photoUrl    String?
+
+  createdAt DateTime @default(now())
+
+  listings      Listing[]
+  verifications Verification[]
+  favorites     Favorite[]
+  reports       Report[]
+  events        Event[]
+
+  @@index([phoneHash])
+}
+
+model Verification {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  kind       VerificationKind
+  state      VerificationState @default(PENDING)
+  /// Manual at launch: a human sets this. The hook exists so automation can slot in.
+  verifiedAt DateTime?
+  verifiedBy String?
+  note       String?
+  createdAt  DateTime          @default(now())
+
+  @@unique([userId, kind])
+  @@index([state])
+}
+
+// ──────────────────────────────────────────────────────── listings ──
+
+model Listing {
+  id String @id @default(cuid())
+
+  /// Denormalised from Area so every query can lead with cityId. Every query is
+  /// city-scoped, and this keeps Tirana's rows together in the index.
+  cityId String
+  city   City   @relation(fields: [cityId], references: [id])
+
+  /// Null for WANTED rows, which use `areaPrefs` instead. Enforced by CHECK.
+  areaId String?
+  area   Area?   @relation(fields: [areaId], references: [id])
+
+  ownerId String
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  /// Copied from the owner so "how many live listings on this phone" is one index
+  /// scan. Drives both agency detection and the paid tier.
+  ownerPhoneHash String
+
+  direction    Direction
+  propertyKind PropertyKind
+  layout       Layout?
+
+  // ── money ──
+  /// What the human typed, in minor units of `priceCurrency`.
+  priceAmountCents Int
+  priceCurrency    Currency @default(EUR)
+  /// Denormalised on write. Every sort, filter and range query uses this column.
+  priceEurCents    Int
+  /// The cash actually handed over at signing: first month + deposit + any broker
+  /// commission. Denormalised so it can be sorted and indexed — the site's whole
+  /// argument is that this number, not the rent, is what people should compare.
+  upfrontEurCents  Int      @default(0)
+  fxRateId         String?
+  fxRate           FxRate?  @relation(fields: [fxRateId], references: [id])
+
+  utilitiesIncluded  Boolean @default(false)
+  utilitiesEurCents  Int?
+  depositMonths      Int     @default(1)
+  /// True when a broker commission is charged on top — the hidden cost we surface.
+  agencyFee          Boolean @default(false)
+
+  // ── the place ──
+  title       String
+  description String
+  addressHint String?
+  /// Deliberately approximate. We never store a full street address.
+  lat         Float?
+  lng         Float?
+
+  sizeM2      Int?
+  roomSizeM2  Int?
+  floor       Int?
+  hasElevator Boolean      @default(false)
+  furnished   Furnished    @default(FULL)
+  heating     Heating      @default(AC)
+  bathroom    BathroomType @default(SHARED)
+
+  balcony        Boolean @default(false)
+  parking        Boolean @default(false)
+  internet       Boolean @default(true)
+  washingMachine Boolean @default(false)
+  petsAllowed    Boolean @default(false)
+  smokingAllowed Boolean @default(false)
+
+  // ── timing ──
+  availableFrom DateTime
+  /// Null means open-ended. A date makes it a temporary offer.
+  availableTo   DateTime?
+  minStayMonths Int?
+
+  // ── flatshare (ROOM only) ──
+  flatmatesTotal  Int?
+  flatmatesGender GenderPref?
+  /// Legally constrained: only meaningful when the advertiser lives in the property.
+  wantedGender    GenderPref?
+  /// Soft, non-binding preferences. Never used as a hard filter.
+  ageMin          Int?
+  ageMax          Int?
+  occupationPref  String?
+
+  // ── state ──
+  status          ListingStatus   @default(DRAFT)
+  moderationState ModerationState @default(PENDING)
+
+  /// Rolled up asynchronously from Event. The log stays the source of truth.
+  viewCount    Int @default(0)
+  contactCount Int @default(0)
+
+  /// Immutable once set, so deleting and reposting cannot game recency.
+  firstPublishedAt DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  translations ListingTranslation[]
+  areaPrefs    ListingAreaPref[]
+  media        Media[]
+  favorites    Favorite[]
+  reports      Report[]
+
+  @@index([cityId, direction, propertyKind, priceEurCents])
+  @@index([cityId, areaId, priceEurCents])
+  @@index([cityId, availableFrom])
+  @@index([ownerPhoneHash, status])
+  @@index([ownerId])
+}
+
+/// Content i18n as rows, not columns. Adding Italian is an INSERT, not a migration.
+model ListingTranslation {
+  id        String  @id @default(cuid())
+  listingId String
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  locale      String
+  title       String
+  description String
+  /// "human" | "machine" — so a machine translation can be replaced without guessing.
+  source      String  @default("human")
+
+  @@unique([listingId, locale])
+}
+
+/// WANTED rows span several zones; OFFER rows use Listing.areaId instead.
+model ListingAreaPref {
+  listingId String
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  areaId    String
+  area      Area    @relation(fields: [areaId], references: [id], onDelete: Cascade)
+
+  @@id([listingId, areaId])
+  @@index([areaId])
+}
+
+model Media {
+  id        String  @id @default(cuid())
+  listingId String
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  url    String
+  sort   Int     @default(0)
+  width  Int?
+  height Int?
+  /// 64-bit perceptual hash for stolen-photo detection (Hamming distance <= 8).
+  phash  BigInt?
+
+  @@index([listingId, sort])
+  @@index([phash])
+}
+
+// ─────────────────────────────────────────────── engagement & log ──
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, listingId])
+  @@index([userId, createdAt])
+}
+
+model Report {
+  id         String  @id @default(cuid())
+  listingId  String
+  listing    Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  reporterId String
+  reporter   User    @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  reason    ReportReason
+  detail    String?
+  resolved  Boolean      @default(false)
+  createdAt DateTime     @default(now())
+
+  @@unique([listingId, reporterId])
+  @@index([resolved, createdAt])
+}
+
+/// APPEND ONLY. No UPDATE, no DELETE — revoked at the database role level in the
+/// migration. This is how we answer "did this platform actually produce matches?"
+model Event {
+  id         BigInt    @id @default(autoincrement())
+  occurredAt DateTime  @default(now())
+
+  actorUserId String?
+  actor       User?   @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  verb        EventVerb
+  subjectType String
+  subjectId   String
+  /// Free-form context: referring filter, area slug, price at the time.
+  metadata    Json?
+
+  @@index([subjectType, subjectId, occurredAt])
+  @@index([verb, occurredAt])
+  @@index([actorUserId, occurredAt])
+}
+
+/// So a historical price can be re-explained rather than re-guessed.
+model FxRate {
+  id        String   @id @default(cuid())
+  base      Currency
+  quote     Currency
+  /// Units of `quote` per 1 unit of `base`, scaled by 10_000.
+  rateScaled Int
+  validFrom DateTime @default(now())
+
+  listings Listing[]
+
+  @@unique([base, quote, validFrom])
+}

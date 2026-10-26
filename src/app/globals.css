@@ -1,26 +1,232 @@
 @import "tailwindcss";
 
+/*
+ * Design system — "bold broadsheet".
+ *
+ * Chosen over the quieter editorial direction because that one read as too plain
+ * against real listings. The answer here is contrast, not decoration: heavy Bodoni,
+ * black rules at 2px, vermilion used as solid blocks rather than as tinted text,
+ * and figures set in monospace at weight 600 so the money is the loudest thing on
+ * the page after the headline.
+ *
+ * Still no rounded corners and no shadows anywhere. Structure comes from rules and
+ * weight. That is what keeps it from looking like a template.
+ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --plaster: #efece4;
+  --paper: #ffffff;
+  --sunk: #e2ded3;
+  --ink: #0d0d0c;
+  --ink-mid: #3d3c38;
+  --ink-mute: #6a6862;
+  --rule: #0d0d0c;
+  --rule-soft: #c8c4b8;
+
+  --accent: #d8371c;
+  --accent-deep: #a82712;
+  --on-accent: #ffffff;
+  --trust: #1c5c3a;
+
+  --rule-weight: 2px;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
+/* Dark is a genuine second palette, not an inversion: the rules go light, the
+   vermilion is lifted so it still burns against a dark ground, and the paper
+   surface stays only just above the page so photographs keep their contrast. */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  :root:not([data-theme="light"]) {
+    --plaster: #100f0e;
+    --paper: #1a1917;
+    --sunk: #262421;
+    --ink: #f3f0e9;
+    --ink-mid: #b9b5ab;
+    --ink-mute: #89857b;
+    --rule: #f3f0e9;
+    --rule-soft: #34322d;
+
+    --accent: #ff5a3c;
+    --accent-deep: #ff7d64;
+    --on-accent: #1a0a06;
+    --trust: #63c795;
+
+    color-scheme: dark;
   }
 }
 
+:root[data-theme="dark"] {
+  --plaster: #100f0e;
+  --paper: #1a1917;
+  --sunk: #262421;
+  --ink: #f3f0e9;
+  --ink-mid: #b9b5ab;
+  --ink-mute: #89857b;
+  --rule: #f3f0e9;
+  --rule-soft: #34322d;
+
+  --accent: #ff5a3c;
+  --accent-deep: #ff7d64;
+  --on-accent: #1a0a06;
+  --trust: #63c795;
+
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-plaster: var(--plaster);
+  --color-paper: var(--paper);
+  --color-sunk: var(--sunk);
+  --color-ink: var(--ink);
+  --color-ink-mid: var(--ink-mid);
+  --color-ink-mute: var(--ink-mute);
+  --color-rule: var(--rule);
+  --color-rule-soft: var(--rule-soft);
+  --color-trust: var(--trust);
+
+  /* The accent kept its old token names so every existing `text-cobalt` /
+     `bg-cobalt` class keeps working; only the value changed. */
+  --color-cobalt: var(--accent);
+  --color-cobalt-deep: var(--accent-deep);
+  --color-on-cobalt: var(--on-accent);
+
+  --font-sans: var(--font-archivo), system-ui, sans-serif;
+  --font-display: var(--font-bodoni), Georgia, serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--plaster);
+  color: var(--ink);
+  font-family: var(--font-archivo), system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-wrap: pretty;
+}
+
+a {
+  color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
+}
+a:hover {
+  color: var(--accent-deep);
+}
+
+input,
+select,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── type ─────────────────────────────────────────────────────────── */
+
+/* Bodoni at 700. At 400 its hairlines go spindly on screen and the whole page
+   loses its nerve; the weight is what makes this direction work. */
+.display {
+  font-family: var(--font-bodoni), Georgia, serif;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.0;
+}
+
+/* Every figure on the site is monospaced, tabular and semibold, so prices line up
+   down the page and read as the second-loudest thing on it. */
+.figure {
+  font-family: var(--font-plex-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* Category labels are solid blocks of vermilion, not tinted text. This is the
+   single biggest reason the page no longer reads as sparse. */
+.label {
+  display: inline-block;
+  background: var(--accent);
+  color: var(--on-accent);
+  padding: 3px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* A section heading sits on a heavy black rule. */
+.section-rule {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink);
+  border-bottom: var(--rule-weight) solid var(--rule);
+  padding-bottom: 8px;
+}
+
+/* ── controls ─────────────────────────────────────────────────────── */
+
+.field {
+  width: 100%;
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+.field-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-bottom: 5px;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  padding: 11px 22px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.btn-primary:hover {
+  background: var(--ink);
+  color: var(--plaster);
+}
+
+/* Listing entries: the divider between them is heavy, so the list reads as a
+   stack of separate stories rather than a wash of rows. */
+main article {
+  border-top-width: var(--rule-weight);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
